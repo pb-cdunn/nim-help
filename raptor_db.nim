@@ -16,7 +16,6 @@ from strformat import fmt
 from strutils import nil
 #from ./nuuid import nil
 from ./util import nil
-import json
 import times
 
 type
@@ -176,7 +175,7 @@ proc toString(ins: var Headroom, outs: var string) =
         #echo i, ":", ins[i]
         outs[i] = ins[i]
 
-proc load_rdb*(sin: streams.Stream): ref Db =
+proc load_rdb*(sin: streams.Stream): owned ref Db =
     stderr.write("BEFORE")
     new(result)
     echo " version init:", result.version
