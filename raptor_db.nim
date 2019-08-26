@@ -160,10 +160,12 @@ type
 proc sscanf(s: cstring, frmt: cstring): cint {.varargs, importc,
         header: "<stdio.h>".}
 
-proc strlen(s: cstring): cint {.importc: "strlen", nodecl.}
+proc strlen(s: cstring): csize {.importc: "strlen", nodecl.}
+# proc strlen(s: ptr char): csize {.importc: "strlen", nodecl.}
 
 proc strlen(a: var Headroom): int =
     echo "  calc strlen"
+    echo addr(a) # Changes the stacktrace to load_rbd(205), newObjNoInit
     let n = strlen(cast[cstring](addr a))
     echo "  calc'd:", n
     return n
@@ -176,9 +178,9 @@ proc toString(ins: var Headroom, outs: var string) =
         #echo i, ":", ins[i]
         outs[i] = ins[i]
 
-proc load_rdb*(sin: streams.Stream): ref Db =
+proc load_rdb*(sin: streams.Stream): Db = # ref Db
     stderr.write("BEFORE")
-    new(result)
+    # new(result)
     echo " version init:", result.version
     stderr.write("AFTER")
     #newSeq(result.seqs, 0)
