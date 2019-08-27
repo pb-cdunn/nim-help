@@ -13,29 +13,36 @@ from math import nil
 from sets import nil
 from streams import nil
 from strformat import fmt
-from strutils import nil
+import strutils
+import strscans # for Nims `scanf` and `scanp` macros
+from parseutils import skipWhitespace, parseBiggestInt
 #from ./nuuid import nil
 from ./util import nil
 import json
 import times
 
 type
+    # changed the fields to `int`, since otherwise I'd have some trouble with the `scanf` macro, since it
+    # uses `parseutils.parseInt` for `$i`. On a 64bit system it's going to be int64 anyways. If `int64` is
+    # important, the `scanf` lines need to be changed. Custom matching proc for `$i` for `int64` via
+    # `${myParseInt64}`, `parseBiggestInt` in that place works though. See the `block_id` for an example
+    # how the code would have to be changed (`const b_frmt` in `load_rdb`)
     SequenceRecord* = object
-        seq_id: int64
+        seq_id: int
         header*: string
-        seq_len: int64
-        file_id: int64
-        start_offset_in_file: int64
-        data_len: int64
+        seq_len: int
+        file_id: int
+        start_offset_in_file: int
+        data_len: int
     FileRecord = tuple
-        file_id: int64
+        file_id: int
         file_path: string
         file_format: string
     BlockRecord = tuple
         block_id: int64
-        seq_id_start: int64
-        seq_id_end: int64
-        num_bases_in_block: int64
+        seq_id_start: int
+        seq_id_end: int
+        num_bases_in_block: int
     Db* = object
         version: string
         files: seq[FileRecord]
@@ -58,13 +65,13 @@ type
 
 type
     SeqLineWriter = object
-        num_seq_lines: int64
+        num_seq_lines: int
         sout: File
-        num_bases_written: int64
-        block_size: int64
-        block_start_bases: int64
-        block_start_id: int64
-        num_blocks: int64
+        num_bases_written: int
+        block_size: int
+        block_start_bases: int
+        block_start_id: int
+        num_blocks: int
 
 proc initSeqLineWriter(sout: File, block_size_MB: int): SeqLineWriter =
     let block_size = block_size_MB * 1024 * 1024
@@ -87,8 +94,8 @@ proc write(w: var SeqLineWriter, split_line: seq[string]) =
     w.sout.write(strutils.join(temp, "\t"))
     w.sout.write('\n')
     inc w.num_seq_lines
-    let nbases: int64 = strutils.parseBiggestInt(split_line[3])
-    w.num_bases_written += nbases
+    let nbases = strutils.parseBiggestInt(split_line[3])
+    w.num_bases_written += nbases.int
 
     # Write the block if we reached the limit.
     let curr_bases_in_block = w.num_bases_written - w.block_start_bases;
@@ -154,27 +161,8 @@ proc filter*(blacklist_fn: string = "") =
 
 const
     MAX_HEADROOM = 1024
-type
-    Headroom = array[MAX_HEADROOM, cchar]
-
-proc sscanf(s: cstring, frmt: cstring): cint {.varargs, importc,
-        header: "<stdio.h>".}
-
-proc strlen(s: cstring): cint {.importc: "strlen", nodecl.}
-
-proc strlen(a: var Headroom): int =
-    echo "  calc strlen"
-    let n = strlen(cast[cstring](addr a))
-    echo "  calc'd:", n
-    return n
-
-proc toString(ins: var Headroom, outs: var string) =
-    var n = strlen(ins)
-    assert n < (MAX_HEADROOM)
-    outs.setLen(n)
-    for i in 0 ..< n:
-        #echo i, ":", ins[i]
-        outs[i] = ins[i]
+#type
+#    Headroom = array[MAX_HEADROOM, cchar]
 
 proc load_rdb*(sin: streams.Stream): ref Db =
     stderr.write("BEFORE")
@@ -185,16 +173,12 @@ proc load_rdb*(sin: streams.Stream): ref Db =
     #var seq_id, seq_len, file_id, offset, data_len: int64
     #var tab: char # to verify that we have read the entire "header"
     var header: string
-    var buf0: Headroom
-    var buf1: Headroom
-
     # Delimiters should be single tabs, but we accept more in some cases.
-    let v_frmt = "V %f"
-    let b_frmt = "B %lld %lld %lld %lld"
-    let s_frmt = strutils.format("S %lld %$#s %lld %lld %lld %lld",
-            (MAX_HEADROOM - 1))
-    let f_frmt = strutils.format("F %lld %$#s %$#s",
-            (MAX_HEADROOM - 1), (MAX_HEADROOM - 1))
+    const v_frmt = "V$s$f"
+    # first int we match shows how to parse `int64`
+    const b_frmt = "B$s${parseBiggestInt}$s$i$s$i$s$i"
+    const s_frmt = "S$s$i$s$+$s$i$s$i$s$i$s$i"
+    const f_frmt = "F$s$i$s$+$s$+"
 
     echo "About to iterate over SIN"
     for line in streams.lines(sin):
@@ -205,49 +189,70 @@ proc load_rdb*(sin: streams.Stream): ref Db =
         if len(line) == 0:
             continue
         elif line[0] == 'V':
-            let scanned = sscanf(line.cstring, v_frmt.cstring,
-                addr result.version)
-            if 1 != scanned:
+            var ver: float
+            let scanned = scanf(line, v_frmt, ver)
+            result.version = $ver
+            if not scanned:
                 let msg = "Too few fields for '" & line & "'"
                 raise newException(util.TooFewFieldsError, msg)
         elif line[0] == 'B':
             var br: BlockRecord
-            let scanned = sscanf(line.cstring, b_frmt.cstring,
-                addr br.block_id, addr br.seq_id_start, addr br.seq_id_end, addr br.num_bases_in_block)
-            if 4 != scanned:
+            let scanned = scanf(line, b_frmt,
+                                br.block_id, br.seq_id_start, br.seq_id_end, br.num_bases_in_block)
+            if not scanned:
                 let msg = "Too few fields for '" & line & "'"
                 raise newException(util.TooFewFieldsError, msg)
         elif line[0] == 'F':
             var fr: FileRecord
-            let scanned = sscanf(line.cstring, f_frmt.cstring,
-                addr fr.file_id, addr buf0, addr buf1)
-            if strlen(buf0) >= (MAX_HEADROOM - 1):
+            var
+              buf0: string
+              buf1: string
+            let scanned = scanf(line, f_frmt,
+                                fr.file_id, buf0, buf1)
+            if buf0.len >= (MAX_HEADROOM - 1):
                 let msg = "Too many characters in file_path (>1000) for '" & line & "'"
                 raise newException(util.FieldTooLongError, msg)
-            if strlen(buf1) >= (MAX_HEADROOM - 1):
+            if buf1.len >= (MAX_HEADROOM - 1):
                 let msg = "Too many characters in file_format (>1000) for '" & line & "'"
                 raise newException(util.FieldTooLongError, msg)
-            if 3 != scanned:
+            if not scanned:
                 let msg = "Too few fields for '" & line & "'"
                 raise newException(util.TooFewFieldsError, msg)
             #toString(buf0, fr.file_path)
             #toString(buf1, fr.file_format)
         elif line[0] == 'S':
             var sr: SequenceRecord
-            echo " scanning..."
-            let scanned = sscanf(line.cstring, s_frmt.cstring,
-                addr sr.seq_id, addr buf0, addr sr.seq_len, addr sr.file_id,
-                addr sr.start_offset_in_file, addr sr.data_len)
-            echo " scanned ", scanned
-            if strlen(buf0) >= (MAX_HEADROOM - 1):
+            var buf0: string
+            var idx = 0
+            var
+              seqid: string
+              seqLen: string
+              fileID: string
+              startOffsetInFile: string
+              dataLen: string
+            # this is kinda ugly, because using scanf I can't make it work and here we have to define
+            # all those string locals, add the integers and only then convert to ints later
+            let scanned = scanp(line, idx, "S", skipWhitespace($input, idx), +({'0'..'9'} -> seqid.add($_)),
+                                skipWhitespace($input, idx), +({'a'..'z', 'A'..'Z', '_', '0'..'9', '/'} -> buf0.add($_)),
+                                skipWhitespace($input, idx), +({'0'..'9'} -> seqLen.add($_)),
+                                skipWhitespace($input, idx), +({'0'..'9'} -> fileID.add($_)),
+                                skipWhitespace($input, idx), +({'0'..'9'} -> startOffsetInFile.add($_)),
+                                skipWhitespace($input, idx), +({'0'..'9'} -> dataLen.add($_)))
+            sr.seq_id = seqID.parseInt
+            sr.seq_len = seqLen.parseInt
+            sr.fileId = fileId.parseInt
+            sr.start_offset_in_file = startOffsetInFile.parseInt
+            sr.data_len = dataLen.parseInt
+            if buf0.len >= (MAX_HEADROOM - 1):
                 let msg = "Too many characters in header (>1000) for '" & line & "'"
                 raise newException(util.FieldTooLongError, msg)
             echo " if'd"
-            if 6 != scanned:
+            if not scanned:
                 let msg = "Too few fields for '" & line & "'"
                 raise newException(util.TooFewFieldsError, msg)
             echo " if'd again"
-            toString(buf0, sr.header)
+            sr.header = buf0
+            # toString(buf0, sr.header)
             echo " sr:", sr
             echo " sr.header:", sr.header
             echo " len(seqs) before add", len(result.seqs)
